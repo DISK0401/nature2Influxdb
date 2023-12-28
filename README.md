@@ -1,0 +1,2 @@
+# nature2Influxdb
+Nature Remoで取得した電力情報をInfluxDBへ転送する
