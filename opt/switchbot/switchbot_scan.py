@@ -2,11 +2,11 @@ import binascii
 from bluepy.btle import Scanner, DefaultDelegate
 from influxdb_client import InfluxDBClient
 from datetime import datetime
-from config import IS_DEBUG,SCANNING_TIME_SECAND,SB_METER_MACDDR_LIST,INFLUXDB_URL,INFLUXDB_ORG,INFLUXDB_TOKEN,INFLUXDB_BUCKET
+from config import IS_DEBUG,SCANNING_TIME_SECAND,SWITCH_BOT_MACDDR_LIST,INFLUXDB_URL,INFLUXDB_ORG,INFLUXDB_TOKEN,INFLUXDB_BUCKET
 
 client = InfluxDBClient(url=INFLUXDB_URL, token=INFLUXDB_TOKEN, org=INFLUXDB_ORG)
 
-def get_old_device(device):
+def get_old_meter_device(device):
     battery = -1
     temperature = -1
     humidity = -0.000
@@ -46,7 +46,7 @@ def get_old_device(device):
     return battery,temperature,humidity
 
 
-def get_new_device(device):
+def get_new_meter_device(device):
     battery = -1
     temperature = -1
     humidity = -0.00
@@ -79,6 +79,23 @@ def get_new_device(device):
     return battery,temperature,humidity
 
 
+def get_plugmini_device(device):
+    is_state_on = False
+    wifi_rssi = 0
+    is_overload = False
+    wat = 0
+
+    for (adtype, desc, value) in device.getScanData():
+        if (adtype != 255): continue
+
+        manufacturer = binascii.unhexlify(value)
+        is_state_on = ( manufacturer[9] & 0b10000000 ) >> 7
+        wifi_rssi = manufacturer[11]
+        is_overload = ( manufacturer[12] & 0b10000000 ) >> 7
+        wat = (((manufacturer[12] << 8 ) + manufacturer[13]) & 0x7fff) / 10
+    return is_state_on,wifi_rssi,is_overload,wat
+
+
 if __name__ == '__main__':
     scanner = Scanner()
     while True:
@@ -87,31 +104,60 @@ if __name__ == '__main__':
         devices = scanner.scan(SCANNING_TIME_SECAND)
         if IS_DEBUG: print("scan end   :",datetime.now())
         for device in devices:
-            if (device.addr).upper() not in SB_METER_MACDDR_LIST: continue
-            if IS_DEBUG: print(SB_METER_MACDDR_LIST[(device.addr).upper()]['name'])
-            battery = -1
-            temperature = -1
-            humidity = -1
+            if (device.addr).upper() not in SWITCH_BOT_MACDDR_LIST: continue
+            if IS_DEBUG: print(SWITCH_BOT_MACDDR_LIST[(device.addr).upper()]['name'])
 
-            if SB_METER_MACDDR_LIST[(device.addr).upper()]['type'] == 'old':
-                battery,temperature,humidity = get_old_device(device)
-            else:
-                battery,temperature,humidity = get_new_device(device)
+            if SWITCH_BOT_MACDDR_LIST[(device.addr).upper()]['type'] in ['meter_new','meter_old']:
+                battery = -1
+                temperature = -1
+                humidity = -1
 
-            body = {
-                "measurement":"switchbot_smartmeter",
-                "time":datetime.utcnow(),
-                "tags": {
-                    "mac_address": (device.addr).upper(),
-                    "device_name": SB_METER_MACDDR_LIST[(device.addr).upper()]['name'],
-                },
-                "fields": {
-                    "temperature": temperature,
-                    "humidity": humidity,
-                    "battery": battery,
+                if SWITCH_BOT_MACDDR_LIST[(device.addr).upper()]['type'] == 'meter_old':
+                    battery,temperature,humidity = get_old_meter_device(device)
+                elif SWITCH_BOT_MACDDR_LIST[(device.addr).upper()]['type'] == 'meter_new':
+                    battery,temperature,humidity = get_new_meter_device(device)
+
+                body = {
+                    "measurement":"switchbot_smartmeter",
+                    "time":datetime.utcnow(),
+                    "tags": {
+                        "mac_address": (device.addr).upper(),
+                        "device_name": SWITCH_BOT_MACDDR_LIST[(device.addr).upper()]['name'],
+                    },
+                    "fields": {
+                        "temperature": temperature,
+                        "humidity": humidity,
+                        "battery": battery,
+                    }
                 }
-            }
-            influx_body.append(body)
+                influx_body.append(body)
+
+            elif SWITCH_BOT_MACDDR_LIST[(device.addr).upper()]['type'] == 'plugmini':
+                is_state_on = False
+                wifi_rssi = 0
+                is_overload = False
+                wat = -1
+
+                is_state_on,wifi_rssi,is_overload,power = get_plugmini_device(device)
+                wat = power * 100
+
+                body = {
+                    "measurement":"switchbot_plugmini",
+                    "time":datetime.utcnow(),
+                    "tags": {
+                        "mac_address": (device.addr).upper(),
+                        "device_name": SWITCH_BOT_MACDDR_LIST[(device.addr).upper()]['name'],
+                    },
+                    "fields": {
+                        "is_state_on": is_state_on,
+                        "wifi_rssi": wifi_rssi,
+                        "is_overload": is_overload,
+                        "wat": wat,
+                    }
+                }
+                influx_body.append(body)
+            else :
+                print("想定外のデバイス")
 
         if IS_DEBUG: print("actscan end:",datetime.now())
         if influx_body:
